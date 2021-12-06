@@ -26,9 +26,16 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <linux/spi/spidev.h>
 #include <time.h>
 #include "hbi.h"
+//#define I2C //Enable for I2C data transfer
+#ifdef I2C
+#include <linux/i2c.h>
+#include <linux/i2c-dev.h>
+#else
+#include <linux/spi/spidev.h>
+#endif
+
 /**************************************************************/
 /* 			Hbi_frame_hdr() macro definition  				  */
 /**************************************************************/
@@ -47,12 +54,45 @@
 #define ZL380xx_MAX_ACCESS_SIZE_IN_BYTES       256 /*128 16-bit words*/
 #define TWOLF_MBCMDREG_SPINWAIT                10000
 #define ZL380xx_HOST_SW_FLAGS_HOST_CMD         1
-
+#ifdef I2C
+char *i2c_fname = "/dev/i2c-1";
+#define I2C_SLAVE_ADDRESS 0x45
+#else
 static const char *device = "/dev/spidev0.0";
 static uint32_t mode;
 static uint8_t  bits = 8;
 static uint32_t speed = 20000000;//500000;
+#endif
+#ifdef I2C
+/********************************************************************/
+/* 	Open I2C device				 		                            */
+/* This example implementation is for user-mode linux. This 	    */
+/* code should be ported to the client's specific HW host mcu/mpu   */
+/********************************************************************/
+bool HbiPortOpen(int32_t *fd)
+{
 
+    int32_t ret_val;
+    int32_t handle = *fd;
+
+    /* Open the device node for the I2C bus 1 */
+    handle = open(i2c_fname, O_RDWR);
+    if (handle < 0)
+    {
+        printf("can't open device");
+        return false;
+    }
+    /* Set I2C_SLAVE */
+    ret_val = ioctl(handle, I2C_SLAVE, I2C_SLAVE_ADDRESS);
+    if (ret_val < 0)
+    {
+        printf("Could not set I2C_SLAVE.");
+        return false;
+    }
+    *fd = handle;
+    return true;
+}
+#else
 /********************************************************************/
 /* 	Open SPI device				 		                            */
 /*	initialise SPI mode, bits. speed etc                            */
@@ -129,10 +169,45 @@ bool HbiPortOpen(int32_t *fd)
     return true;
 
 }
+#endif
 void HbiPortClose(int32_t fd)
 {
     close(fd);
 }
+#ifdef I2C
+/*********************************************************************************/
+/* 					Read from Device.							                 */
+/* This example implementation is for user-mode linux. This 	                 */
+/* code should be ported to the client's specific HW host mcu/mpu                */
+/*********************************************************************************/
+bool HbiPortRead(int32_t i2c_fd, void *pSrc, void *pDst, size_t nread, size_t nwrite)
+{
+
+
+    int ret_val;
+    struct i2c_msg msgs[2];
+    struct i2c_rdwr_ioctl_data msgset;
+
+    msgs[0].addr = I2C_SLAVE_ADDRESS;
+    msgs[0].flags = 0;
+    msgs[0].len = nwrite;
+    msgs[0].buf = pSrc;
+
+    msgs[1].addr = I2C_SLAVE_ADDRESS;
+    msgs[1].flags = I2C_M_RD;
+    msgs[1].len = nread;
+    msgs[1].buf = pDst;
+
+    msgset.msgs = msgs;
+    msgset.nmsgs = 2;
+
+    if (ioctl(i2c_fd, I2C_RDWR, &msgset) < 0) {
+        perror("ioctl(I2C_RDWR) in i2c_read");
+        return false;
+    }
+    return true;
+}
+#else
 /*********************************************************************************/
 /* 					Read from Device.							                 */
 /* This example implementation is for user-mode linux. This 	                 */
@@ -162,12 +237,35 @@ bool HbiPortRead(int32_t fd, void *pSrc, void *pDst, size_t nread, size_t nwrite
 
     return true;
 }
+#endif
 /*********************************************************************************/
 /* 					Write to Device.							                 */
 /* This example implementation is for user-mode linux. This 	                 */
 /* code should be ported to the client's specific HW host mcu/mpu                */
 /*********************************************************************************/
+#ifdef I2C
+bool HbiPortWrite(int32_t i2c_fd, uint8_t const *tx, uint8_t const *rx, size_t len)
+{
+    struct i2c_msg msgs[1];
+    struct i2c_rdwr_ioctl_data msgset[1];
+    int i, ret_val;
 
+    msgs[0].addr = I2C_SLAVE_ADDRESS;
+    msgs[0].flags = 0;
+    msgs[0].len = len;
+    msgs[0].buf = tx;
+
+    msgset[0].msgs = msgs;
+    msgset[0].nmsgs = 1;
+
+    if (ioctl(i2c_fd, I2C_RDWR, &msgset) < 0) {
+        printf("ioctl(I2C_RDWR) in i2c_write");
+        close(i2c_fd);
+        return false;
+    }
+    return true;
+}
+#else
 bool HbiPortWrite(int32_t fd, uint8_t const *tx, uint8_t const *rx, size_t len)
 {
     int32_t ret = 0;
@@ -188,6 +286,7 @@ bool HbiPortWrite(int32_t fd, uint8_t const *tx, uint8_t const *rx, size_t len)
 
     return true;
 }
+#endif
 /* delay function */
 void HbiPortDelay(int32_t msec /*milliseconds*/)
 {
@@ -357,7 +456,6 @@ HbiStatus HbiWriteHostCmd(int32_t fd, uint16_t cmd)
     {
         status = HbiRead(fd, 0x0006, (uint8_t *)&temp, sizeof(temp));
         CHK_STATUS(status);
-        //temp = HBI_VAL(HBI_DEV_ENDIAN_BIG, temp);
         if (!(temp & 0x1))
         {
             break;
